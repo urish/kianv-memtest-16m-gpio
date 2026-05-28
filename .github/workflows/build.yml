@@ -1,0 +1,41 @@
+name: Build
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Install RISC-V bare-metal toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y gcc-riscv64-unknown-elf
+
+      - name: Build
+        working-directory: src
+        run: make
+
+      - name: Inspect ELF (reset vector + size + symbols)
+        working-directory: src
+        run: |
+          riscv64-unknown-elf-size memtest.elf
+          echo "--- first 40 instructions ---"
+          riscv64-unknown-elf-objdump -d memtest.elf | head -60
+          echo "--- undefined symbols (should be empty) ---"
+          riscv64-unknown-elf-nm -u memtest.elf || true
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v7
+        with:
+          name: kianv-memtest-16m-gpio
+          path: |
+            src/memtest.bin
+            src/memtest.elf
+            src/memtest.map
