@@ -119,10 +119,17 @@ static inline int ui_switch_on(void) {
 /* Outer-ring chase: a, b, c, d, e, f. const -> .rodata, lives in flash. */
 static const uint8_t spinner_glyphs[6] = { 0x01u, 0x02u, 0x04u, 0x08u, 0x10u, 0x20u };
 
+/* Final-state glyphs (bit0=A .. bit6=G). The GPIO output register keeps
+ * driving the pins after SYSCON_HALT gates the CPU clock, so the glyph
+ * stays lit until reset. */
+#define SEG_P   0x73u   /* PASS */
+#define SEG_F   0x71u   /* FAIL */
+
 /* ---- Terminal states ---------------------------------------------------- */
-static void halt(void) {
-    uo_release();
+static void halt_with_glyph(uint8_t glyph) {
     uart_drain();
+    mmio_w32(GPIO_UO_EN, 0xFFu);
+    mmio_w32(GPIO_UO_OUT, (uint32_t)glyph);
     mmio_w32(SYSCON, SYSCON_HALT);
     for (;;) { }
 }
@@ -138,7 +145,7 @@ static void fail(int test, uint32_t addr, uint32_t exp, uint32_t got) {
     uart_puts(" got=");
     uart_putx32(got);
     uart_puts("\n");
-    halt();
+    halt_with_glyph(SEG_F);
 }
 
 /* ---- Probe phase -------------------------------------------------------- */
@@ -347,7 +354,7 @@ int main(void) {
 
     if (!probe_psram()) {
         uart_puts("\nprobe phase reported MISMATCH(es) - skipping bulk sweep\n");
-        halt();
+        halt_with_glyph(SEG_F);
     }
 
     uart_puts("\nprobe phase clean. starting bulk sweeps\n");
@@ -361,6 +368,6 @@ int main(void) {
 
     uo_release();
     uart_puts("\n\nPASS - all PSRAM tests succeeded\n");
-    halt();
+    halt_with_glyph(SEG_P);
     return 0;
 }

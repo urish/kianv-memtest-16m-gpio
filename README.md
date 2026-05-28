@@ -45,10 +45,11 @@ The bootloader is meant to replace the normal kernel-loader at flash offset
      before the uo handover) or `[ui_in[0]=0] -> back to UART dots`
      (after the uo release), so the operator always knows from the
      console which mode is active.
-6. **PASS** -> uo released, `PASS` line to UART, syscon halt.
-   **FAIL** -> uo released, `FAIL test=N addr=0x.. exp=0x.. got=0x..`
-   to UART, syscon halt. `uart_drain()` is called before halt so the
-   trailing line is always fully flushed.
+6. **PASS** / **FAIL** -> result line to UART (drained), then `P`
+   (`0x73`) or `F` (`0x71`) latched on the 7-segment via `GPIO_UO_EN`
+   / `GPIO_UO_OUT`, then syscon halt. The clock is gated but the GPIO
+   output register stays driven, so the glyph holds until reset.
+   FAIL line is `FAIL test=N addr=0x.. exp=0x.. got=0x..`.
 
 The 7-segment / GPIO peripheral matches the gf180mcu memory map:
 | Address    | Register    |
