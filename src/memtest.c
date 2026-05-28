@@ -5,24 +5,20 @@
  *
  * Sequence:
  *   1. UART init @ 115200 8N1, banner.
- *   2. Probe phase: write+read 2 patterns at 8 sparse PSRAM addresses,
- *      with uart_drain() bracketing every store/load. The LAST line you
- *      see is exactly the operation that hung, so the address (and
- *      whether the write or the read stalled) is pinpointable on a
- *      hung bus.
- *   3. If all probes pass, run three full-coverage sweeps over
- *      [0x80000000, 0x80FFF000) with a per-MiB progress tick:
- *        [1/3] address-in-data    w = a
- *        [2/3] inverse-address    w = ~a
- *        [3/3] xorshift32 LFSR    deterministic PRNG
- *      At each tick the bootloader polls GPIO_UI_IN[0]: when 0 it emits
- *      a '.' to UART; when 1 it claims uo_out via GPIO_UO_EN=0xFF and
- *      drives the outer-ring chase (a -> b -> c -> d -> e -> f) on a
- *      single-digit 7-segment display wired to uo_out[6:0] (segment A
- *      on bit 0, G on bit 6, DP on bit 7, common cathode).
- *   4. PASS  -> uo released, "PASS" to UART, syscon halt.
- *      FAIL  -> uo released, "FAIL test=N addr=0x.. exp=0x.. got=0x.."
- *               to UART, syscon halt.
+ *   2. Read ui_in[1] for test depth: 0 = FAST (single stride-64 sweep,
+ *      ~2 s @ 30 MHz), 1 = THOROUGH (three full-coverage sweeps:
+ *      addr-in-data, inverse-addr, xorshift32 LFSR; ~96 s @ 30 MHz).
+ *   3. Probe phase (always): write+read 2 patterns at 8 sparse addresses
+ *      with uart_drain() bracketing every store/load, so the LAST line
+ *      on the wire pinpoints any hung-bus access.
+ *   4. Selected sweep(s) with a per-tick (~100 KiB) progress event.
+ *      ui_in[0] = 0 -> '.' to UART (throttled to ~1 per MiB).
+ *      ui_in[0] = 1 -> outer-ring 7-seg chase on uo_out[6:0] at ~10 Hz
+ *                      (segment A on bit 0, G on bit 6, common cathode).
+ *   5. PASS  -> "PASS" to UART (drained), then SEG_P latched on the
+ *               7-segment, then syscon halt.
+ *      FAIL  -> "FAIL test=N addr=0x.. exp=0x.. got=0x.." to UART,
+ *               then SEG_F latched, then syscon halt.
  */
 
 #include <stdint.h>
@@ -114,6 +110,9 @@ static inline void uo_release(void) {
 }
 static inline int ui_switch_on(void) {
     return (int)(mmio_r32(GPIO_UI_IN) & 1u);
+}
+static inline int ui_thorough(void) {
+    return (int)((mmio_r32(GPIO_UI_IN) >> 1) & 1u);
 }
 
 /* Outer-ring chase: a, b, c, d, e, f. const -> .rodata, lives in flash. */
@@ -272,6 +271,30 @@ static inline uint32_t xs32(uint32_t x) {
     return x;
 }
 
+/* Stride-64 address-in-data sweep. Touches ~1/16 of words but spans the
+ * full address range, so address-line opens/shorts and per-region stuck
+ * cells are caught. ~2 s @ 30 MHz. */
+static void test_fast(int idx, tick_state_t *st) {
+    uint32_t a;
+    uint32_t progress;
+
+    uart_puts("\n[fast] stride-64 address-in-data  write");
+    progress = 0;
+    for (a = PSRAM_BASE; a < PSRAM_TEST_END; a += 64) {
+        *(volatile uint32_t *)a = a;
+        ON_TICK(progress, st);
+    }
+
+    uart_puts(" verify");
+    progress = 0;
+    for (a = PSRAM_BASE; a < PSRAM_TEST_END; a += 64) {
+        uint32_t v = *(volatile uint32_t *)a;
+        if (v != a) fail(idx, a, a, v);
+        ON_TICK(progress, st);
+    }
+    uart_puts(" OK");
+}
+
 static void test_addr_in_data(int idx, tick_state_t *st) {
     volatile uint32_t *p;
     uint32_t a;
@@ -352,19 +375,32 @@ int main(void) {
     uart_putx32(PSRAM_TEST_END);
     uart_puts(" (16 MiB - 4 KiB top reserved for stack)\n");
 
+    int thorough = ui_thorough();
+    if (thorough) {
+        uart_puts("  mode   = thorough (ui_in[1]=1) -- 3 full-coverage sweeps, ~96 s @ 30 MHz\n");
+    } else {
+        uart_puts("  mode   = fast (ui_in[1]=0)     -- stride-64 single sweep, ~2 s @ 30 MHz\n");
+        uart_puts("                                    (set ui_in[1]=1 before reset for thorough)\n");
+    }
+
     if (!probe_psram()) {
         uart_puts("\nprobe phase reported MISMATCH(es) - skipping bulk sweep\n");
         halt_with_glyph(SEG_F);
     }
 
-    uart_puts("\nprobe phase clean. starting bulk sweeps\n");
+    uart_puts("\nprobe phase clean. starting bulk ");
+    uart_puts(thorough ? "sweeps\n" : "sweep\n");
     uart_puts("  ui_in[0]=0 -> UART dots, one per ~MiB of traffic\n");
     uart_puts("  ui_in[0]=1 -> 7-seg outer-ring spinner on uo_out (~10 Hz; UART silent)\n");
 
     tick_state_t st = { .spin_idx = 0, .dot_subcount = 0, .was_gpio = -1 };
-    test_addr_in_data(1, &st);
-    test_inverse_addr(2, &st);
-    test_lfsr(3, &st);
+    if (thorough) {
+        test_addr_in_data(1, &st);
+        test_inverse_addr(2, &st);
+        test_lfsr(3, &st);
+    } else {
+        test_fast(1, &st);
+    }
 
     uo_release();
     uart_puts("\n\nPASS - all PSRAM tests succeeded\n");
