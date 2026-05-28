@@ -6,7 +6,7 @@
  * Runs out of XIP SPI flash (entry point at 0x20100000). Stack grows
  * down from __stacktop = 0x81000000, so the first push lands at
  * 0x80FFFFFC (last 4 KiB of PSRAM). The memtest stops at 0x80FFF000
- * so it never trampes the stack.
+ * so it never tramples the stack.
  *
  * No .data init and no .bss zeroing -- the POST bootloader does not
  * rely on either. The linker script ASSERTs SIZEOF(.bss) == 0 and
